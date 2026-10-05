@@ -59,6 +59,23 @@ CREATE TABLE IF NOT EXISTS message_identifiers (
 CREATE INDEX IF NOT EXISTS idx_ident_value ON message_identifiers(value);
 CREATE INDEX IF NOT EXISTS idx_ident_pk ON message_identifiers(message_pk);
 
+-- Correspondent index: one row per validated mailbox occurrence in From/To/Cc.
+-- Only parse facts — never inferred from subjects or bodies. Malformed
+-- addresses are excluded here and reported via the defects table instead.
+CREATE TABLE IF NOT EXISTS message_addresses (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    message_pk      BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL CHECK (role IN ('from','to','cc')),
+    address         TEXT NOT NULL,              -- normalized (lowercase) grouping key
+    address_raw     TEXT NOT NULL,              -- address as written in the header
+    display_name    TEXT NOT NULL DEFAULT '',   -- RFC2047-decoded display name
+    header_name     TEXT NOT NULL,              -- 'From' | 'To' | 'Cc'
+    raw_header      TEXT NOT NULL,              -- original (possibly encoded) header text
+    ordinal         INT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_msgaddr_address ON message_addresses(address);
+CREATE INDEX IF NOT EXISTS idx_msgaddr_pk ON message_addresses(message_pk);
+
 CREATE TABLE IF NOT EXISTS bodies (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     message_pk      BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

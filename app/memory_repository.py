@@ -24,6 +24,7 @@ class MemoryRepository:
         self.messages: dict[int, dict[str, Any]] = {}
         self.headers: list[dict[str, Any]] = []
         self.identifiers: list[dict[str, Any]] = []
+        self.addresses: list[dict[str, Any]] = []
         self.bodies: list[dict[str, Any]] = []
         self.attachments: list[dict[str, Any]] = []
         self.defects: list[dict[str, Any]] = []
@@ -102,6 +103,19 @@ class MemoryRepository:
             self.identifiers.extend(
                 {"message_pk": message_pk, "kind": "in_reply_to", "value": v, "ordinal": i}
                 for i, v in enumerate(parsed.in_reply_to)
+            )
+            self.addresses.extend(
+                {
+                    "message_pk": message_pk,
+                    "role": c.role,
+                    "address": c.address,
+                    "address_raw": c.address_raw,
+                    "display_name": c.display_name,
+                    "header_name": c.header_name,
+                    "raw_header": c.raw_header,
+                    "ordinal": c.ordinal,
+                }
+                for c in parsed.correspondents
             )
             for body in parsed.bodies:
                 self.bodies.append(
@@ -247,6 +261,78 @@ class MemoryRepository:
 
         hits = [self._summary(m) for m in self.messages.values() if match(m)]
         return {"query": query, "count": len(hits), "results": hits[offset : offset + limit]}
+
+    # -- correspondents ----------------------------------------------------
+    @staticmethod
+    def _corr_summary(address: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        # Per-role counts are distinct messages: a mailbox repeated within one
+        # header is still a single mail to/from that correspondent.
+        from_count = len({r["message_pk"] for r in rows if r["role"] == "from"})
+        to_count = len({r["message_pk"] for r in rows if r["role"] == "to"})
+        cc_count = len({r["message_pk"] for r in rows if r["role"] == "cc"})
+        return {
+            "address": address,
+            "display_names": sorted({r["display_name"] for r in rows if r["display_name"]}),
+            "from_count": from_count,
+            "to_count": to_count,
+            "cc_count": cc_count,
+            "sender_count": from_count,
+            "recipient_count": to_count + cc_count,
+            "message_count": len({r["message_pk"] for r in rows}),
+        }
+
+    def list_correspondents(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for a in self.addresses:
+            grouped.setdefault(a["address"], []).append(a)
+        out = [self._corr_summary(addr, rows) for addr, rows in grouped.items()]
+        out.sort(key=lambda x: x["address"])
+        return out[offset : offset + limit]
+
+    def get_correspondent(self, address: str, limit: int = 50, offset: int = 0) -> dict[str, Any] | None:
+        norm = address.strip().lower()
+        rows = [a for a in self.addresses if a["address"] == norm]
+        if not rows:
+            return None
+        by_message: dict[int, list[dict[str, Any]]] = {}
+        for r in rows:
+            by_message.setdefault(r["message_pk"], []).append(r)
+        messages = []
+        for pk, occurrences in by_message.items():
+            m = self.messages.get(pk)
+            if m is None:
+                continue
+            messages.append(
+                {
+                    "id": m["id"],
+                    "message_id": m["message_id"],
+                    "subject": m["subject"],
+                    "date": m["date"],
+                    "roles": sorted({o["role"] for o in occurrences}),
+                    "sources": [
+                        {
+                            "role": o["role"],
+                            "header_name": o["header_name"],
+                            "raw_header": o["raw_header"],
+                            "display_name": o["display_name"],
+                            "address_raw": o["address_raw"],
+                        }
+                        for o in sorted(occurrences, key=lambda x: (x["role"], x["ordinal"]))
+                    ],
+                }
+            )
+        # chronological, undated messages last (mirrors the PG NULLS LAST query)
+        messages.sort(
+            key=lambda x: (
+                x["date"] is None,
+                x["date"] or datetime.min.replace(tzinfo=timezone.utc),
+                x["id"],
+            )
+        )
+        return {
+            **self._corr_summary(norm, rows),
+            "messages": messages[offset : offset + limit],
+        }
 
     def get_thread(self, thread_key: str) -> dict[str, Any] | None:
         msgs = [m for m in self.messages.values() if m["thread_key"] == thread_key]

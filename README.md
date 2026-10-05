@@ -34,6 +34,26 @@ There is **no frontend** — JSON HTTP API only.
 * **Provenance**: each ingest stores the raw EML sha256, size, on-disk path
   and the parsed result references the same digest.
 
+## Correspondents
+
+Implemented in `app/parser/eml_parser.py::_correspondents` (parse phase) and
+persisted to `message_addresses`:
+
+* Mailboxes are extracted **only** from `From`, `To`, `Cc` — never inferred
+  from the Subject or bodies.
+* Addresses are parsed from the **raw header text** (the policy-rendered
+  value silently drops tokens it cannot parse). Each entry keeps the decoded
+  display name, the address as written, and the original (possibly
+  RFC2047-encoded) header text, so e.g. GB18030 display names stay traceable.
+* Grouping key is the lowercased address: case and display-name variants of
+  one mailbox fold into a single correspondent.
+* Malformed tokens (`not-an-address`, `bob <>`, unparseable headers) are
+  recorded as `InvalidAddress` defects located at `0:from` / `0:to` / `0:cc`
+  and are **never** indexed as contacts. Empty groups
+  (`undisclosed-recipients:;`) are legitimate and produce no defect.
+* Per-role counts are distinct messages: a mailbox repeated within one
+  header still counts as a single mail to/from that correspondent.
+
 ## Threading / conversations
 
 Implemented in `app/threads.py` (pure function, unit tested):
@@ -57,6 +77,7 @@ Implemented in `app/threads.py` (pure function, unit tested):
 | GET | `/messages` / `/messages/{id}` | list / full detail (tree, bodies, attachments, defects) |
 | GET | `/messages/{id}/attachments/{aid}/download` | stream attachment bytes (path re-validated) |
 | GET | `/search?q=` | substring over subject, Message-ID, all header values, body plain text |
+| GET | `/correspondents` / `/correspondents/{address}` | mailbox index: per-role counts (from/to/cc, sender/recipient) / messages with roles and source headers (case-insensitive lookup) |
 | GET | `/threads` / `/threads/{key}` | thread summaries / ordered members with reference headers |
 | POST | `/threads/rebuild` | recompute all threads; returns conflicts/cycles/dangling/weak hints |
 | GET | `/ingests/{id}` | provenance: raw digest/path + every defect located by stage |
@@ -85,13 +106,14 @@ Without a DSN the service boots an in-memory repository (useful for demos).
 ls samples/
 # 01 multibyte/nested, 02 circular refs, 03 missing id + bogus charset,
 # 04 duplicate ids, 05 same subject different threads, 06 corrupt boundary,
-# 07 bad CTE, 08 path traversal attachment, 09 XSS/remote HTML
+# 07 bad CTE, 08 path traversal attachment, 09 XSS/remote HTML,
+# 10 malformed address headers
 ```
 
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest                       # 47 unit + API tests (memory backend)
+.venv/bin/python -m pytest                       # 62 unit + API tests (memory backend)
 EMLARCH_RUN_PG_TESTS=1 EMLARCH_TEST_DSN='postgresql://postgres@/postgres?host=/tmp/pgsock&port=55432' \
   .venv/bin/python -m pytest                     # + real PostgreSQL integration tests
 ```

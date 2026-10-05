@@ -96,3 +96,35 @@ def test_idempotent_schema_init(pg_client):
     # creating a second repository over the same DSN must not error on DDL
     arch.repo.init_schema()
     assert c.get("/health").status_code == 200
+
+
+def test_correspondents_sql(pg_client):
+    c, _ = pg_client
+    _post(c, "01_multibyte.eml")
+    bad = (
+        b"From: not-an-address\r\nTo: OK@example.com\r\n"
+        b"Message-ID: <pg-bad@x>\r\nSubject: bad addr\r\n\r\nx\r\n"
+    )
+    r = c.post("/ingest", files={"file": ("bad.eml", bad, "message/rfc822")})
+    assert r.json()["status"] == "defective"
+
+    # per-role counts, case-folded grouping, decoded display names
+    cn = c.get("/correspondents/CN@example.com").json()
+    assert cn["address"] == "cn@example.com"
+    assert (cn["from_count"], cn["to_count"], cn["cc_count"]) == (0, 1, 0)
+    assert "【点名册】" in cn["display_names"]
+    assert "=?gb18030?" in cn["messages"][0]["sources"][0]["raw_header"]
+
+    ok = c.get("/correspondents/ok@example.com").json()
+    assert ok["to_count"] == 1
+    assert ok["messages"][0]["sources"][0]["address_raw"] == "OK@example.com"
+
+    # malformed token: defect only, never a contact
+    assert c.get("/correspondents/not-an-address").status_code == 404
+    fails = c.get("/failures").json()
+    assert any(
+        d["level"] == "InvalidAddress" for f in fails for d in f["defects"]
+    )
+    listing = {row["address"] for row in c.get("/correspondents").json()}
+    assert {"sigs@example.com", "cn@example.com", "jp@example.com", "ok@example.com"} <= listing
+    assert "not-an-address" not in listing

@@ -10,6 +10,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from email import message_from_bytes
+from email.header import decode_header, make_header
 from email.message import Message
 from email.policy import SMTP
 from email.utils import getaddresses, parsedate_to_datetime
@@ -20,6 +21,7 @@ from .models import (
     Attachment,
     BodyPart,
     ContentDisposition,
+    Correspondent,
     Defect,
     Header,
     ParseStatus,
@@ -31,6 +33,21 @@ from .models import (
 # bare tokens. Capture angle-bracketed ids first, then fall back to bare atoms.
 _MSGID_RE = re.compile(r"<([^<>@\s]+@[^<>\s]+)>")
 _BARE_MSGID_RE = re.compile(r"([A-Za-z0-9_.+\-]+@[A-Za-z0-9_.\-]+)")
+
+# Mailbox validation for the correspondent index. ``getaddresses`` is lenient
+# and happily returns bare words ("not-an-address") as addresses; only tokens
+# with a real local@domain shape are indexed as correspondents. Non-ASCII
+# (EAI) characters are accepted in both local part and domain.
+_ATEXT = r"A-Za-z0-9!#$%&'*+/=?^_`{|}~.-"
+_ADDR_RE = re.compile(
+    rf"^(?:[{_ATEXT}]|[^\x00-\x7f\s])+"  # local part
+    r"@"
+    rf"(?:[A-Za-z0-9.-]|[^\x00-\x7f\s])+"  # domain (labels + dots)
+    r"$"
+)
+# An address header that is only empty group(s), e.g. "undisclosed-recipients:;",
+# is legitimate and carries no mailboxes — it is not a defect.
+_EMPTY_GROUP_RE = re.compile(r"^(?:[^:@,;]+:\s*;?\s*)+$")
 
 # Character sets to try in order when the declared charset fails. GB18030 is a
 # superset of GBK/GB2312 and covers most Chinese mail in the wild.
@@ -136,6 +153,73 @@ def _addresses(header_value: str | None) -> list[Address]:
     return result
 
 
+def _decode_display_name(name: str) -> str:
+    """RFC2047-decode a display name; on failure keep the raw spelling."""
+    if not name:
+        return ""
+    try:
+        return str(make_header(decode_header(name)))
+    except (LookupError, UnicodeDecodeError, ValueError):
+        return name
+
+
+def _correspondents(root: Message) -> tuple[list[Correspondent], list[Defect]]:
+    """Build the correspondent index from From/To/Cc headers only.
+
+    Addresses are parsed from the *raw* header text: the policy-rendered
+    value silently drops tokens it cannot parse, which would lose mailboxes
+    and hide malformed input. Only tokens with a valid ``local@domain`` shape
+    are indexed — malformed tokens are recorded as ``InvalidAddress`` defects
+    (with the offending text and the source header) instead of being
+    laundered into contacts. Nothing is inferred from the Subject or any
+    other header. The raw header text is kept on every entry so encoded
+    display names remain traceable.
+    """
+    found: list[Correspondent] = []
+    defects: list[Defect] = []
+    for header_name, role in (("From", "from"), ("To", "to"), ("Cc", "cc")):
+        decoded, raw = _decode_header_value(root, header_name)
+        source = raw if raw is not None else decoded
+        if source is None:
+            continue
+        stage = f"0:{header_name.lower()}"
+        pairs = [(n.strip(), a.strip()) for n, a in getaddresses([source])]
+        pairs = [(n, a) for n, a in pairs if n or a]
+        if not pairs:
+            stripped = source.strip()
+            if stripped and not _EMPTY_GROUP_RE.match(stripped):
+                defects.append(
+                    Defect(
+                        stage=stage,
+                        level="InvalidAddress",
+                        message=f"{header_name}: no valid address in {stripped[:200]!r}",
+                    )
+                )
+            continue
+        for ordinal, (name, addr) in enumerate(pairs):
+            if not addr or not _ADDR_RE.match(addr):
+                defects.append(
+                    Defect(
+                        stage=stage,
+                        level="InvalidAddress",
+                        message=f"{header_name}: malformed address {(addr or name)[:200]!r}",
+                    )
+                )
+                continue
+            found.append(
+                Correspondent(
+                    role=role,
+                    address=addr.lower(),
+                    address_raw=addr,
+                    display_name=_decode_display_name(name),
+                    header_name=header_name,
+                    raw_header=source,
+                    ordinal=ordinal,
+                )
+            )
+    return found, defects
+
+
 def _decode_header_value(msg: Message, name: str) -> tuple[str | None, str | None]:
     """Return (RFC2047-decoded value, raw value) for the first occurrence."""
     raw = msg.get(name)
@@ -143,9 +227,11 @@ def _decode_header_value(msg: Message, name: str) -> tuple[str | None, str | Non
         return None, None
     # With SMTP policy the header subclass renders RFC2047 words decoded as
     # str(); the original encoded spelling is read from the raw item list.
+    # Field names are case-insensitive (RFC 5322), so match raw items the
+    # same way — otherwise oddly-cased headers lose their raw spelling.
     decoded = str(raw)
     try:
-        original = next(value for key, value in msg.raw_items() if key == name)
+        original = next(value for key, value in msg.raw_items() if key.lower() == name.lower())
     except StopIteration:
         original = decoded
     return decoded, original
@@ -287,6 +373,9 @@ def parse_eml(data: bytes) -> ParsedMessage:
     date, date_defects = _parse_date(root.get("Date"), "0:date")
     defects.extend(date_defects)
 
+    correspondents, addr_defects = _correspondents(root)
+    defects.extend(addr_defects)
+
     def first_header(name: str) -> str | None:
         value = root.get(name)
         return str(value) if value is not None else None
@@ -387,6 +476,7 @@ def parse_eml(data: bytes) -> ParsedMessage:
         bcc=_addresses(first_header("Bcc")),
         reply_to=_addresses(first_header("Reply-To")),
         sender=_addresses(first_header("Sender")),
+        correspondents=correspondents,
         headers=headers,
         tree=tree,
         bodies=bodies,
@@ -413,6 +503,7 @@ def _failed_result(error: str, raw_sha: str, raw_size: int) -> ParsedMessage:
         bcc=[],
         reply_to=[],
         sender=[],
+        correspondents=[],
         headers=[],
         tree=None,
         bodies=[],

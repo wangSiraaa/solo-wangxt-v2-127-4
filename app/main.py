@@ -16,6 +16,8 @@ from app.memory_repository import MemoryRepository
 from app.pg_repository import PgRepository
 from app.repository import Repository
 from app.schemas import (
+    CorrespondentDetail,
+    CorrespondentSummary,
     FailureOut,
     Health,
     IngestDetail,
@@ -145,6 +147,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
         return get_state(request).repo.search_messages(q, limit, offset)
+
+    # ---- correspondents ---------------------------------------------------
+    @app.get("/correspondents", response_model=list[CorrespondentSummary], tags=["correspondents"])
+    def list_correspondents(
+        request: Request,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> list[dict[str, Any]]:
+        return get_state(request).repo.list_correspondents(limit, offset)
+
+    @app.get("/correspondents/{address:path}", response_model=CorrespondentDetail, tags=["correspondents"])
+    def get_correspondent(
+        request: Request,
+        address: str,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        detail = get_state(request).repo.get_correspondent(address, limit, offset)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="correspondent not found")
+        return detail
 
     # ---- ingests / failures ---------------------------------------------
     @app.get("/ingests/{ingest_id}", response_model=IngestDetail, tags=["ingest"])

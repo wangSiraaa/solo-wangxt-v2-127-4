@@ -14,3 +14,4 @@ storage or threading boundary:
 | `07_bad_cte.eml` | invalid base64 content-transfer-encoding payload |
 | `08_traversal.eml` | `../` and RFC2231 `%2f` traversal in attachment filename |
 | `09_html_xss.eml` | script/iframe/style, event handlers, remote `src`, `javascript:` link, one valid `cid:` image |
+| `10_bad_addresses.eml` | valid mailboxes mixed with malformed `To`/`Cc` tokens (`InvalidAddress` defects; case-folded correspondent index) |

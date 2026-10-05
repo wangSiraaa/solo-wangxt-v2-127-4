@@ -117,6 +117,27 @@ class PgRepository:
                         "INSERT INTO message_identifiers (message_pk, kind, value, ordinal) VALUES (%s,%s,%s,%s)",
                         idents,
                     )
+                if parsed.correspondents:
+                    cur.executemany(
+                        """
+                        INSERT INTO message_addresses (message_pk, role, address, address_raw,
+                                                       display_name, header_name, raw_header, ordinal)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
+                        [
+                            (
+                                message_pk,
+                                c.role,
+                                c.address,
+                                c.address_raw,
+                                c.display_name,
+                                c.header_name,
+                                c.raw_header,
+                                c.ordinal,
+                            )
+                            for c in parsed.correspondents
+                        ],
+                    )
 
                 for body in parsed.bodies:
                     escaped = escape_html(body.text) if body.content_type == "text/html" else None
@@ -304,6 +325,115 @@ class PgRepository:
             cols = [c.name for c in cur.description]
             items = _jsonify([dict(zip(cols, r)) for r in cur.fetchall()])
         return {"query": query, "count": len(items), "results": items}
+
+    # -- correspondents ----------------------------------------------------
+    @staticmethod
+    def _corr_summary(address: str, from_count: int, to_count: int, cc_count: int,
+                      message_count: int, display_names: list[str]) -> dict[str, Any]:
+        return {
+            "address": address,
+            "display_names": sorted(display_names),
+            "from_count": from_count,
+            "to_count": to_count,
+            "cc_count": cc_count,
+            "sender_count": from_count,
+            "recipient_count": to_count + cc_count,
+            "message_count": message_count,
+        }
+
+    def list_correspondents(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT address,
+                       count(DISTINCT message_pk) FILTER (WHERE role = 'from') AS from_count,
+                       count(DISTINCT message_pk) FILTER (WHERE role = 'to')   AS to_count,
+                       count(DISTINCT message_pk) FILTER (WHERE role = 'cc')   AS cc_count,
+                       count(DISTINCT message_pk)            AS message_count,
+                       jsonb_agg(DISTINCT display_name)
+                           FILTER (WHERE display_name <> '') AS display_names
+                FROM message_addresses
+                GROUP BY address
+                ORDER BY address
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            )
+            rows = cur.fetchall()
+        return [
+            self._corr_summary(addr, fc, tc, cc, mc, names or [])
+            for addr, fc, tc, cc, mc, names in rows
+        ]
+
+    def get_correspondent(self, address: str, limit: int = 50, offset: int = 0) -> dict[str, Any] | None:
+        norm = address.strip().lower()
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT count(DISTINCT message_pk) FILTER (WHERE role = 'from') AS from_count,
+                       count(DISTINCT message_pk) FILTER (WHERE role = 'to')   AS to_count,
+                       count(DISTINCT message_pk) FILTER (WHERE role = 'cc')   AS cc_count,
+                       count(DISTINCT message_pk)            AS message_count,
+                       jsonb_agg(DISTINCT display_name)
+                           FILTER (WHERE display_name <> '') AS display_names
+                FROM message_addresses
+                WHERE address = %s
+                """,
+                (norm,),
+            )
+            from_count, to_count, cc_count, message_count, names = cur.fetchone()
+            if message_count == 0:
+                return None
+            cur.execute(
+                """
+                SELECT DISTINCT m.id, m.message_id, m.subject, m.date
+                FROM messages m
+                JOIN message_addresses a ON a.message_pk = m.id
+                WHERE a.address = %s
+                ORDER BY m.date ASC NULLS LAST, m.id ASC
+                LIMIT %s OFFSET %s
+                """,
+                (norm, limit, offset),
+            )
+            msg_rows = cur.fetchall()
+            pk_page = [r[0] for r in msg_rows]
+            cur.execute(
+                """
+                SELECT message_pk, role, header_name, raw_header, display_name, address_raw
+                FROM message_addresses
+                WHERE address = %s AND message_pk = ANY(%s)
+                ORDER BY message_pk, role, ordinal
+                """,
+                (norm, pk_page),
+            )
+            sources_by_pk: dict[int, list[dict[str, Any]]] = {}
+            for pk, role, header_name, raw_header, display_name, address_raw in cur.fetchall():
+                sources_by_pk.setdefault(pk, []).append(
+                    {
+                        "role": role,
+                        "header_name": header_name,
+                        "raw_header": raw_header,
+                        "display_name": display_name,
+                        "address_raw": address_raw,
+                    }
+                )
+        messages = [
+            {
+                "id": pk,
+                "message_id": mid,
+                "subject": subject,
+                "date": date,
+                "roles": sorted({s["role"] for s in sources_by_pk.get(pk, [])}),
+                "sources": sources_by_pk.get(pk, []),
+            }
+            for pk, mid, subject, date in msg_rows
+        ]
+        return _jsonify(
+            {
+                **self._corr_summary(norm, from_count, to_count, cc_count, message_count, names or []),
+                "messages": messages,
+            }
+        )
 
     def get_thread(self, thread_key: str) -> dict[str, Any] | None:
         with self.connect() as conn, conn.cursor() as cur:

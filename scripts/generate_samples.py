@@ -209,6 +209,25 @@ def html_xss() -> bytes:
     )
 
 
+def bad_addresses() -> bytes:
+    """Correspondent extraction: valid mailboxes mixed with malformed tokens.
+
+    The valid addresses must be indexed (case-folded); every malformed token
+    must surface as an InvalidAddress defect located at its header, and must
+    never appear as a contact.
+    """
+    return (
+        b"Message-ID: <addr-01@example.com>\r\n"
+        b"From: Archive Team <Archive@Example.COM>\r\n"
+        b"To: not-an-address, =?gb18030?b?ob6148P7suGhvw==?= <cn@example.com>\r\n"
+        b"Cc: a@b c@d\r\n"
+        b"Subject: Correspondent index edge cases\r\n"
+        b"Date: Tue, 30 Sep 2026 15:00:00 +0000\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"Mixed valid and malformed address headers.\r\n"
+    )
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     write("01_multibyte.eml", multibyte())
@@ -223,6 +242,7 @@ def main() -> None:
     write("07_bad_cte.eml", bad_cte())
     write("08_traversal.eml", traversal_attachment())
     write("09_html_xss.eml", html_xss())
+    write("10_bad_addresses.eml", bad_addresses())
 
 
 if __name__ == "__main__":

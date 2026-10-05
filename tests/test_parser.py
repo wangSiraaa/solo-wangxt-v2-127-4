@@ -145,6 +145,49 @@ def test_invalid_date_is_located_defect():
     assert any(d.level == "InvalidDate" and d.stage == "0:date" for d in p.defects)
 
 
+# ---------- correspondent extraction ----------
+
+def test_correspondents_extracted_with_roles_and_raw_headers():
+    p = parse_eml(read_sample("01_multibyte.eml"))
+    by_addr = {c.address: c for c in p.correspondents}
+    assert set(by_addr) == {"sigs@example.com", "cn@example.com", "jp@example.com"}
+    assert by_addr["sigs@example.com"].role == "from"
+    assert by_addr["cn@example.com"].role == "to"
+    # decoded display name + original encoded header both kept
+    assert by_addr["cn@example.com"].display_name == "【点名册】"
+    assert "=?gb18030?" in by_addr["cn@example.com"].raw_header
+    assert by_addr["sigs@example.com"].display_name.startswith("老王")
+
+
+def test_correspondents_normalized_and_validated():
+    eml = (
+        b"From: Alice A <Alice@Example.COM>\r\n"
+        b"To: not-an-address, ok@example.com\r\n"
+        b"Cc: bob <>\r\n"
+        b"Subject: contact bob@example.com please\r\n\r\nx"
+    )
+    p = parse_eml(eml)
+    assert p.status is ParseStatus.DEFECTIVE
+    # case folded; subject addresses never inferred
+    assert [(c.role, c.address) for c in p.correspondents] == [
+        ("from", "alice@example.com"),
+        ("to", "ok@example.com"),
+    ]
+    assert p.correspondents[0].address_raw == "Alice@Example.COM"
+    bad = [d for d in p.defects if d.level == "InvalidAddress"]
+    assert {d.stage for d in bad} == {"0:to", "0:cc"}
+    assert any("not-an-address" in d.message for d in bad)
+
+
+def test_correspondents_empty_group_and_missing_headers_ok():
+    p = parse_eml(b"To: undisclosed-recipients:;\r\nSubject: x\r\n\r\nbody")
+    assert p.status is ParseStatus.OK
+    assert p.correspondents == []
+    p2 = parse_eml(b"Subject: nothing\r\n\r\nbody")
+    assert p2.correspondents == []
+    assert not [d for d in p2.defects if d.level == "InvalidAddress"]
+
+
 def test_more_remote_url_bypasses_stripped():
     hostile = [
         '<img src=" java\tscript:alert(1)">',

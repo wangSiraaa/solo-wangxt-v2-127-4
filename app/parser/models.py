@@ -30,6 +30,25 @@ class Address:
 
 
 @dataclass(frozen=True)
+class Correspondent:
+    """One validated mailbox occurrence in a From/To/Cc header.
+
+    ``address`` is the normalized grouping key (lowercased); ``address_raw``
+    keeps the spelling as written. ``raw_header`` preserves the original
+    (possibly RFC2047-encoded) header text so encoded display names stay
+    traceable back to the source bytes.
+    """
+
+    role: str  # "from" | "to" | "cc"
+    address: str  # normalized (lowercase) mailbox — the grouping key
+    address_raw: str  # address as written in the header (case preserved)
+    display_name: str  # RFC2047-decoded display name ("" when absent)
+    header_name: str  # "From" | "To" | "Cc"
+    raw_header: str  # original header text, exactly as received
+    ordinal: int  # position of the address within its header
+
+
+@dataclass(frozen=True)
 class Defect:
     """One parser defect (boundary mismatch, bad encoding, ...).
 
@@ -118,6 +137,7 @@ class ParsedMessage:
     bcc: list[Address]
     reply_to: list[Address]
     sender: list[Address]
+    correspondents: list[Correspondent]
     headers: list[Header]
     # Structure
     tree: PartNode | None

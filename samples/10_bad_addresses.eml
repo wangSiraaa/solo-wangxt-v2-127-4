@@ -1,0 +1,9 @@
+Message-ID: <addr-01@example.com>
+From: Archive Team <Archive@Example.COM>
+To: not-an-address, =?gb18030?b?ob6148P7suGhvw==?= <cn@example.com>
+Cc: a@b c@d
+Subject: Correspondent index edge cases
+Date: Tue, 30 Sep 2026 15:00:00 +0000
+Content-Type: text/plain
+
+Mixed valid and malformed address headers.

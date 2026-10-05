@@ -110,6 +110,38 @@ class SearchResponse(BaseModel):
     results: list[dict[str, Any]]
 
 
+class CorrespondentSummary(BaseModel):
+    address: str  # normalized (lowercase) mailbox — the grouping key
+    display_names: list[str]  # distinct decoded display names seen for this mailbox
+    from_count: int
+    to_count: int
+    cc_count: int
+    sender_count: int  # messages where the mailbox appears in From
+    recipient_count: int  # messages where it appears in To or Cc
+    message_count: int  # distinct messages involving the mailbox
+
+
+class CorrespondentSource(BaseModel):
+    role: str
+    header_name: str
+    raw_header: str  # original header text (encoded display names traceable)
+    display_name: str
+    address_raw: str  # address spelling as written (case preserved)
+
+
+class CorrespondentMessage(BaseModel):
+    id: int
+    message_id: str | None
+    subject: str | None
+    date: datetime | None
+    roles: list[str]
+    sources: list[CorrespondentSource]
+
+
+class CorrespondentDetail(CorrespondentSummary):
+    messages: list[CorrespondentMessage]
+
+
 class FailureOut(BaseModel):
     ingest_id: int
     received_at: datetime
