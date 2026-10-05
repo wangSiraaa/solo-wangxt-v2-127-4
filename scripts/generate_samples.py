@@ -209,6 +209,21 @@ def html_xss() -> bytes:
     )
 
 
+def correspondents() -> bytes:
+    """One mailbox in all three roles (case/display-name variants) + bad tokens."""
+    from_name = ew("档案员小李", "gb18030")
+    return (
+        b"Message-ID: <cor-10@example.com>\r\n"
+        + f"From: {from_name} <Archivist@Example.com>\r\n".encode()
+        + b'To: "Li (archivist)" <archivist@example.com>, broken@, Carol <carol@example.com>\r\n'
+        + b"Cc: not-an-address, archivist@EXAMPLE.com\r\n"
+        + b"Subject: Correspondent normalization and bad tokens\r\n"
+        + b"Date: Tue, 30 Sep 2026 15:00:00 +0000\r\n"
+        + b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        + b"correspondent index sample\r\n"
+    )
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     write("01_multibyte.eml", multibyte())
@@ -223,6 +238,7 @@ def main() -> None:
     write("07_bad_cte.eml", bad_cte())
     write("08_traversal.eml", traversal_attachment())
     write("09_html_xss.eml", html_xss())
+    write("10_correspondents.eml", correspondents())
 
 
 if __name__ == "__main__":

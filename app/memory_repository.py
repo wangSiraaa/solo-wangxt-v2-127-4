@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
+from app.parser.correspondents import normalize_address
 from app.parser.html_sanitizer import escape_html
 from app.parser.models import ParsedMessage
 from app.threads import ThreadInput, compute_threads
@@ -27,6 +28,7 @@ class MemoryRepository:
         self.bodies: list[dict[str, Any]] = []
         self.attachments: list[dict[str, Any]] = []
         self.defects: list[dict[str, Any]] = []
+        self.correspondents: list[dict[str, Any]] = []
         self.thread_runs: list[dict[str, Any]] = []
         self._ingest_seq = 0
         self._msg_seq = 0
@@ -102,6 +104,16 @@ class MemoryRepository:
             self.identifiers.extend(
                 {"message_pk": message_pk, "kind": "in_reply_to", "value": v, "ordinal": i}
                 for i, v in enumerate(parsed.in_reply_to)
+            )
+            self.correspondents.extend(
+                {
+                    "message_pk": message_pk,
+                    "role": c.role,
+                    "address": c.address,
+                    "display_name": c.display_name,
+                    "raw_header": c.raw_header,
+                }
+                for c in parsed.correspondents
             )
             for body in parsed.bodies:
                 self.bodies.append(
@@ -326,3 +338,70 @@ class MemoryRepository:
             if a["id"] == attachment_id:
                 return dict(a)
         return None
+
+    # -- correspondents ----------------------------------------------------
+    @staticmethod
+    def _role_counts() -> dict[str, int]:
+        return {"from_count": 0, "to_count": 0, "cc_count": 0}
+
+    def list_correspondents(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        agg: dict[str, dict[str, Any]] = {}
+        for row in self.correspondents:
+            entry = agg.setdefault(
+                row["address"],
+                {"address": row["address"], "display_names": set(), "total": 0, **self._role_counts()},
+            )
+            entry[f"{row['role']}_count"] += 1
+            entry["total"] += 1
+            if row["display_name"]:
+                entry["display_names"].add(row["display_name"])
+        out = []
+        for entry in agg.values():
+            entry["display_names"] = sorted(entry["display_names"])
+            out.append(entry)
+        out.sort(key=lambda e: (-e["total"], e["address"]))
+        return out[offset : offset + limit]
+
+    def get_correspondent(
+        self, address: str, role: str | None = None, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any] | None:
+        key = normalize_address(address)
+        rows = [r for r in self.correspondents if r["address"] == key]
+        if not rows:
+            return None
+        counts = self._role_counts()
+        names: set[str] = set()
+        for r in rows:
+            counts[f"{r['role']}_count"] += 1
+            if r["display_name"]:
+                names.add(r["display_name"])
+
+        def sort_key(r: dict[str, Any]):
+            m = self.messages.get(r["message_pk"], {})
+            ts = m["date"].timestamp() if m.get("date") else None
+            # date DESC NULLS LAST, then message_pk ASC, then role
+            return (ts is None, -(ts or 0.0), r["message_pk"], r["role"])
+
+        filtered = [r for r in rows if role is None or r["role"] == role]
+        filtered.sort(key=sort_key)
+        messages = []
+        for r in filtered[offset : offset + limit]:
+            m = self.messages.get(r["message_pk"], {})
+            messages.append(
+                {
+                    "message_pk": r["message_pk"],
+                    "message_id": m.get("message_id"),
+                    "subject": m.get("subject"),
+                    "date": m.get("date"),
+                    "role": r["role"],
+                    "display_name": r["display_name"],
+                    "raw_header": r["raw_header"],
+                }
+            )
+        return {
+            "address": key,
+            "display_names": sorted(names),
+            **counts,
+            "total": len(rows),
+            "messages": messages,
+        }

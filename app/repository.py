@@ -44,3 +44,19 @@ class Repository(Protocol):
     def list_failures(self, limit: int, offset: int) -> list[dict[str, Any]]: ...
     def get_attachment(self, attachment_id: int) -> dict[str, Any] | None: ...
     def get_attachment_by_message(self, message_pk: int, attachment_id: int) -> dict[str, Any] | None: ...
+
+    def list_correspondents(self, limit: int, offset: int) -> list[dict[str, Any]]:
+        """All known mailboxes with per-role (from/to/cc) message counts."""
+        ...
+
+    def get_correspondent(
+        self, address: str, role: str | None, limit: int, offset: int
+    ) -> dict[str, Any] | None:
+        """One mailbox: per-role counts plus the matching messages.
+
+        Each message entry names the role and the raw source header it was
+        found in. ``role`` (from/to/cc) optionally filters the message list;
+        the counts always cover every role. ``None`` when the mailbox is
+        unknown (lookup is case-insensitive).
+        """
+        ...

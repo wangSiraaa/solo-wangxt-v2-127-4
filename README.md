@@ -33,6 +33,15 @@ There is **no frontend** — JSON HTTP API only.
   an ingest row with the raw digest and defects.
 * **Provenance**: each ingest stores the raw EML sha256, size, on-disk path
   and the parsed result references the same digest.
+* **Correspondent index**: `From`/`To`/`Cc` are parsed into a queryable
+  mailbox index (`app/parser/correspondents.py`). Mailboxes are normalized to
+  lower case so case and display-name variants share one entry; every entry
+  keeps the decoded display name **and** the raw (encoded) source header, so
+  e.g. a GB18030-encoded Chinese name stays traceable. Extraction is
+  segment-driven on the raw header text — one poisoned token cannot hide
+  valid addresses, and malformed tokens become `MalformedAddress` defects
+  (stage `0:from`/`0:to`/`0:cc`) instead of fake index entries. Contacts are
+  never inferred from subjects or bodies.
 
 ## Threading / conversations
 
@@ -59,6 +68,8 @@ Implemented in `app/threads.py` (pure function, unit tested):
 | GET | `/search?q=` | substring over subject, Message-ID, all header values, body plain text |
 | GET | `/threads` / `/threads/{key}` | thread summaries / ordered members with reference headers |
 | POST | `/threads/rebuild` | recompute all threads; returns conflicts/cycles/dangling/weak hints |
+| GET | `/correspondents` | all mailboxes with per-role (from/to/cc) message counts |
+| GET | `/correspondents/{address}?role=` | one mailbox: counts, display-name variants, messages with role + raw source header |
 | GET | `/ingests/{id}` | provenance: raw digest/path + every defect located by stage |
 | GET | `/failures` | failed/defective ingests with their defect lists |
 | GET | `/health` | backend and configured storage roots |
@@ -110,6 +121,7 @@ app/
   config.py            env-driven configuration (roots, cap, DSN)
   parser/
     eml_parser.py      stdlib email parsing, structural walk, charset ladder
+    correspondents.py  From/To/Cc mailbox index (normalization + defects)
     html_sanitizer.py  allow-list sanitizer + escaping + text extraction
     models.py          structured result dataclasses
   storage.py           ControlledStorage (path safety, 0600, metadata logs)

@@ -91,6 +91,34 @@ def test_search_sql_joins(pg_client):
     assert c.get("/search", params={"q": "nothing-matches-zzz"}).json()["count"] == 0
 
 
+def test_correspondent_index_sql(pg_client):
+    c, _ = pg_client
+    _post(c, "01_multibyte.eml")
+    r = _post(c, "10_correspondents.eml")
+    assert r.json()["status"] == "defective"
+    pk = r.json()["message_pk"]
+
+    listing = {e["address"]: e for e in c.get("/correspondents").json()}
+    arch = listing["archivist@example.com"]
+    assert (arch["from_count"], arch["to_count"], arch["cc_count"], arch["total"]) == (1, 1, 1, 3)
+    assert "档案员小李" in arch["display_names"]
+    assert listing["sigs@example.com"]["from_count"] == 1
+    # malformed tokens are defects, not index entries
+    assert not any("broken" in a or "not-an-address" in a for a in listing)
+
+    detail = c.get("/correspondents/ARCHIVIST@example.com").json()
+    assert detail["address"] == "archivist@example.com"
+    assert {(m["role"], m["message_pk"]) for m in detail["messages"]} == {
+        ("from", pk), ("to", pk), ("cc", pk),
+    }
+    from_entry = next(m for m in detail["messages"] if m["role"] == "from")
+    assert "=?gb18030?b?" in from_entry["raw_header"]
+    only_to = c.get("/correspondents/archivist@example.com", params={"role": "to"}).json()
+    assert [m["role"] for m in only_to["messages"]] == ["to"]
+    assert only_to["total"] == 3
+    assert c.get("/correspondents/nobody@nowhere.example").status_code == 404
+
+
 def test_idempotent_schema_init(pg_client):
     c, arch = pg_client
     # creating a second repository over the same DSN must not error on DDL

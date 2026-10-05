@@ -16,6 +16,8 @@ from app.memory_repository import MemoryRepository
 from app.pg_repository import PgRepository
 from app.repository import Repository
 from app.schemas import (
+    CorrespondentDetail,
+    CorrespondentSummary,
     FailureOut,
     Health,
     IngestDetail,
@@ -177,6 +179,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if thread is None:
             raise HTTPException(status_code=404, detail="thread not found")
         return thread
+
+    # ---- correspondents ---------------------------------------------------
+    @app.get("/correspondents", response_model=list[CorrespondentSummary], tags=["correspondents"])
+    def list_correspondents(
+        request: Request,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> list[dict[str, Any]]:
+        return get_state(request).repo.list_correspondents(limit, offset)
+
+    @app.get("/correspondents/{address:path}", response_model=CorrespondentDetail, tags=["correspondents"])
+    def get_correspondent(
+        request: Request,
+        address: str,
+        role: str | None = Query(None, pattern="^(from|to|cc)$"),
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        result = get_state(request).repo.get_correspondent(address, role, limit, offset)
+        if result is None:
+            raise HTTPException(status_code=404, detail="correspondent not found")
+        return result
 
     # ---- attachments -----------------------------------------------------
     @app.get("/messages/{pk}/attachments/{attachment_id}/download", tags=["attachments"])

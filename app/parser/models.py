@@ -89,6 +89,23 @@ class Header:
     ordinal: int
 
 
+@dataclass(frozen=True)
+class Correspondent:
+    """One mailbox seen in a From/To/Cc header of the top-level message.
+
+    ``address`` is the normalized (lower-cased) mailbox so case and
+    display-name variants collapse onto one index entry; ``raw_header`` keeps
+    the exact encoded header text so an encoded display name (e.g. a GB18030
+    encoded-word) can always be traced back to its source. Malformed tokens
+    never appear here — they are reported as defects instead.
+    """
+
+    role: str  # "from" | "to" | "cc"
+    address: str  # normalized mailbox (lower-cased)
+    display_name: str  # RFC2047-decoded display name ("" when absent)
+    raw_header: str  # raw (encoded) header value this entry was parsed from
+
+
 @dataclass
 class PartNode:
     """Structural node of the (possibly nested / message/rfc822) MIME tree."""
@@ -127,6 +144,8 @@ class ParsedMessage:
     defects: list[Defect]
     status: ParseStatus
     fatal_error: str | None = None
+    # Correspondent index (From/To/Cc of the top-level message only)
+    correspondents: list[Correspondent] = field(default_factory=list)
     # Filled by caller (parser operates on bytes only)
     raw_sha256: str | None = None
     raw_size: int | None = None

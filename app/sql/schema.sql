@@ -59,6 +59,20 @@ CREATE TABLE IF NOT EXISTS message_identifiers (
 CREATE INDEX IF NOT EXISTS idx_ident_value ON message_identifiers(value);
 CREATE INDEX IF NOT EXISTS idx_ident_pk ON message_identifiers(message_pk);
 
+-- Correspondent index: one row per (message, role, normalized mailbox).
+-- `address` is lower-cased so case/display-name variants share one entry;
+-- `raw_header` preserves the exact encoded source header for traceability.
+CREATE TABLE IF NOT EXISTS correspondents (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    message_pk      BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL CHECK (role IN ('from','to','cc')),
+    address         TEXT NOT NULL,
+    display_name    TEXT NOT NULL DEFAULT '',
+    raw_header      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_correspondents_address ON correspondents(address);
+CREATE INDEX IF NOT EXISTS idx_correspondents_message ON correspondents(message_pk);
+
 CREATE TABLE IF NOT EXISTS bodies (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     message_pk      BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

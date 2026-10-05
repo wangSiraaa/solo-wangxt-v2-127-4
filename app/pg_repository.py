@@ -9,6 +9,7 @@ from typing import Any, Sequence
 import psycopg
 from psycopg.types.json import Jsonb
 
+from app.parser.correspondents import normalize_address
 from app.parser.html_sanitizer import escape_html
 from app.parser.models import ParsedMessage
 from app.threads import ThreadInput, compute_threads
@@ -116,6 +117,18 @@ class PgRepository:
                     cur.executemany(
                         "INSERT INTO message_identifiers (message_pk, kind, value, ordinal) VALUES (%s,%s,%s,%s)",
                         idents,
+                    )
+
+                if parsed.correspondents:
+                    cur.executemany(
+                        """
+                        INSERT INTO correspondents (message_pk, role, address, display_name, raw_header)
+                        VALUES (%s,%s,%s,%s,%s)
+                        """,
+                        [
+                            (message_pk, c.role, c.address, c.display_name, c.raw_header)
+                            for c in parsed.correspondents
+                        ],
                     )
 
                 for body in parsed.bodies:
@@ -373,6 +386,74 @@ class PgRepository:
                 return None
             cols = [c.name for c in cur.description]
             return _jsonify(dict(zip(cols, row)))
+
+    # -- correspondents ----------------------------------------------------
+    _CORRESPONDENT_AGG = """
+        COUNT(*) FILTER (WHERE role = 'from') AS from_count,
+        COUNT(*) FILTER (WHERE role = 'to') AS to_count,
+        COUNT(*) FILTER (WHERE role = 'cc') AS cc_count,
+        COUNT(*) AS total,
+        COALESCE(array_agg(DISTINCT display_name ORDER BY display_name)
+                 FILTER (WHERE display_name <> ''), '{}') AS display_names
+    """
+
+    def list_correspondents(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT address, {self._CORRESPONDENT_AGG}
+                FROM correspondents
+                GROUP BY address
+                ORDER BY COUNT(*) DESC, address ASC
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            )
+            cols = [c.name for c in cur.description]
+            return _jsonify([dict(zip(cols, r)) for r in cur.fetchall()])
+
+    def get_correspondent(
+        self, address: str, role: str | None = None, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any] | None:
+        key = normalize_address(address)
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {self._CORRESPONDENT_AGG} FROM correspondents WHERE address = %s",
+                (key,),
+            )
+            row = cur.fetchone()
+            if not row or row[3] == 0:  # total == 0
+                return None
+            cols = [c.name for c in cur.description]
+            agg = dict(zip(cols, row))
+
+            sql = """
+                SELECT c.message_pk, c.role, c.display_name, c.raw_header,
+                       m.message_id, m.subject, m.date
+                FROM correspondents c
+                JOIN messages m ON m.id = c.message_pk
+                WHERE c.address = %s
+            """
+            params: list[Any] = [key]
+            if role is not None:
+                sql += " AND c.role = %s"
+                params.append(role)
+            sql += " ORDER BY m.date DESC NULLS LAST, c.message_pk ASC, c.role LIMIT %s OFFSET %s"
+            params.extend((limit, offset))
+            cur.execute(sql, params)
+            mcols = [c.name for c in cur.description]
+            messages = [dict(zip(mcols, r)) for r in cur.fetchall()]
+        return _jsonify(
+            {
+                "address": key,
+                "display_names": agg["display_names"],
+                "from_count": agg["from_count"],
+                "to_count": agg["to_count"],
+                "cc_count": agg["cc_count"],
+                "total": agg["total"],
+                "messages": messages,
+            }
+        )
 
 
 def _jsonify(value: Any) -> Any:

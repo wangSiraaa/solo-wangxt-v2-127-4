@@ -14,6 +14,7 @@ from email.message import Message
 from email.policy import SMTP
 from email.utils import getaddresses, parsedate_to_datetime
 
+from .correspondents import extract_correspondents
 from .html_sanitizer import sanitize_html, strip_to_text
 from .models import (
     Address,
@@ -288,8 +289,21 @@ def parse_eml(data: bytes) -> ParsedMessage:
     defects.extend(date_defects)
 
     def first_header(name: str) -> str | None:
-        value = root.get(name)
-        return str(value) if value is not None else None
+        # The stdlib structured-header parser can raise on pathological
+        # values (e.g. "To: @@") — both at get() time (eager parse) and at
+        # str() time. Fall back to the raw text and record the failure
+        # instead of letting one header kill the parse.
+        try:
+            value = root.get(name)
+            return str(value) if value is not None else None
+        except Exception as exc:
+            defects.append(
+                Defect(stage=f"0:{name.lower()}", level="HeaderRenderError", message=str(exc)[:200])
+            )
+            try:
+                return next(v for k, v in root.raw_items() if k.lower() == name.lower())
+            except StopIteration:
+                return None
 
     headers: list[Header] = []
     for ordinal, (name, value) in enumerate(root.raw_items()):
@@ -299,6 +313,10 @@ def parse_eml(data: bytes) -> ParsedMessage:
         except Exception:
             decoded_value = raw_value
         headers.append(Header(name=name, value=decoded_value, raw_value=raw_value, ordinal=ordinal))
+
+    # ---- Correspondent index (From/To/Cc only; bad tokens -> defects) ----
+    correspondents, addr_defects = extract_correspondents(root)
+    defects.extend(addr_defects)
 
     # ---- Walk parts ------------------------------------------------------
     bodies: list[BodyPart] = []
@@ -394,6 +412,7 @@ def parse_eml(data: bytes) -> ParsedMessage:
         defects=defects,
         status=status,
         fatal_error=None,
+        correspondents=correspondents,
         raw_sha256=raw_sha,
         raw_size=len(data),
     )

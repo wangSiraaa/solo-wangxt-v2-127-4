@@ -136,6 +136,29 @@ class ThreadDetail(BaseModel):
     messages: list[dict[str, Any]]
 
 
+class CorrespondentSummary(BaseModel):
+    address: str  # normalized (lower-cased) mailbox
+    display_names: list[str]  # every decoded display-name variant observed
+    from_count: int
+    to_count: int
+    cc_count: int
+    total: int
+
+
+class CorrespondentMessageOut(BaseModel):
+    message_pk: int
+    message_id: str | None
+    subject: str | None
+    date: datetime | None
+    role: str  # from | to | cc
+    display_name: str
+    raw_header: str  # exact encoded source header (traceability)
+
+
+class CorrespondentDetail(CorrespondentSummary):
+    messages: list[CorrespondentMessageOut]
+
+
 class IngestDetail(BaseModel):
     id: int
     received_at: datetime
